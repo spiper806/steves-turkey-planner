@@ -7,16 +7,47 @@ const date=t=>new Date(t),fmt=t=>new Intl.DateTimeFormat('en-US',{month:'short',
 const timeInput=el=>el.value,now=()=>Date.now();
 function thanksgiving(y){const first=new Date(y,10,1);return new Date(y,10,1+(4-first.getDay()+7)%7+21).getTime()}
 const stepNames=['Start thawing','Prepare brine','Start brining','Remove from brine','Start roasting','Turkey is done','Rest complete','Turkey is carved','Serve dinner'];
-function calc(){const y=Number(s.year),w=Number(s.weight),t=thanksgiving(y),[hh,mm]=s.dinner.split(':').map(Number),dinner=new Date(date(t).getFullYear(),10,date(t).getDate(),hh,mm).getTime();const roast=Math.ceil(Math.max(3.5,4.15+(w-20)*.19)*4)/4*H;const buffer=45*MS,rest=35*MS,carve=30*MS;const roastStart=dinner-roast-buffer-rest-carve;const remove=roastStart-75*MS;const brineStart=remove-Number(s.brine)*H;const thawDays=Math.ceil(w/4)+1;const planned=[brineStart-thawDays*D,brineStart-D,brineStart,remove,roastStart,roastStart+roast,roastStart+roast+rest,roastStart+roast+rest+carve,dinner];return {dinner,roastStart,planned,roastHours:roast/H,thawDays}}
+function calc(){
+ const y=Number(s.year),w=Number(s.weight),t=thanksgiving(y),[hh,mm]=s.dinner.split(':').map(Number);
+ const dinner=new Date(date(t).getFullYear(),10,date(t).getDate(),hh,mm).getTime();
+ const roast=Math.ceil(Math.max(3.5,4.15+(w-20)*.19)*4)/4*H;
+ const buffer=45*MS,rest=35*MS,carve=30*MS;
+ const roastStart=dinner-roast-buffer-rest-carve,remove=roastStart-75*MS;
+ const brineStart=remove-Number(s.brine)*H;
+ // USDA refrigerator thawing guidance: about 24 h per 4-5 lb; allow a planning cushion.
+ const thawDays=Math.ceil(w/4)+1;
+ const planned=[brineStart-thawDays*D,brineStart-D,brineStart,remove,roastStart,roastStart+roast,roastStart+roast+rest,roastStart+roast+rest+carve,dinner];
+ return {dinner,roastStart,planned,roastHours:roast/H,thawDays};
+}
 const done=i=>Number.isFinite(Number(s.actual[i]));
 function actual(i){return done(i)?Number(s.actual[i]):null}
 function current(){for(let i=0;i<9;i++)if(!done(i))return i;return 9}
-function eventTime(i,c){if(done(i))return actual(i);if(i===3&&done(2))return Math.min(c.planned[3],actual(2)+Number(s.brine)*H);if(i===5&&done(4))return actual(4)+(c.planned[5]-c.planned[4]);if(i===6&&done(5))return actual(5)+35*MS;if(i===7&&done(6))return Math.max(c.planned[7],actual(6));return c.planned[i]}
+function eventTime(i,c){
+ if(done(i))return actual(i);
+ // Preserve the fixed removal/roasting deadline after a late brine start.
+ if(i===5&&done(4))return actual(4)+(c.planned[5]-c.planned[4]);
+ if(i===6&&done(5))return actual(5)+35*MS;
+ if(i===7&&done(6))return Math.max(c.planned[7],actual(6));
+ return c.planned[i];
+}
+function scheduleAlerts(c){
+ const notes=[];
+ if(done(2)&&!done(3)){
+   const available=(c.planned[3]-actual(2))/H;
+   const planned=Number(s.brine);
+   if(available<planned-0.1)notes.push(`Brining began ${((actual(2)-c.planned[2])/H).toFixed(1)} hours later than planned. To protect dinner, keep the planned turkey-prep deadline; available brining time is ${Math.max(0,available).toFixed(1)} hours instead of ${planned}. Do not delay roasting to force a full brine.`);
+   if(available<=0)notes.push('Brining started after the planned removal time. The schedule needs manual review; dinner timing cannot be guaranteed.');
+ }
+ if(done(3)&&!done(4)&&actual(3)>c.planned[4])notes.push('Turkey preparation finished after the planned roast start. The oven schedule is at risk.');
+ if(done(4)&&!done(5)&&actual(4)>c.planned[4]+15*MS)notes.push('Roasting started later than planned. Keep cooking continuously to safe temperature; dinner may be delayed.');
+ if(done(5)&&actual(5)>c.dinner-65*MS)notes.push('Turkey finished later than the planned rest-and-carve window. Do not shorten safe cooking.');
+ return notes;
+}
 function mark(i,stamp=now()){s.actual[i]=stamp;save();render()}
 function undo(){const keys=Object.keys(s.actual).map(Number).sort((a,b)=>b-a);if(keys.length){delete s.actual[keys[0]];save();render()}}
 function safety(i){if(i===5)return 'Confirm 165°F in thickest breast, innermost thigh and wing before marking done. Do not use time alone.';if(i===6)return 'Rest about 35 minutes, loosely tented. Keep total time outside temperature control within food safety limits.';if(i===7)return 'Keep carved turkey at or above 140°F, or refrigerate promptly and reheat to 165°F.';if(i===2)return 'Turkey and brine must be at or below 40°F.';return ''}
 function render(){const c=calc(),i=current();$('nowStep').textContent=i===9?'Thanksgiving complete!':'Next: '+stepNames[i];$('nowTime').textContent=i===9?'All major milestones recorded':`Target ${fmt(eventTime(i,c))}`;$('progressBar').style.width=(i/9*100)+'%';$('progressLabel').textContent=`${i} of 9 milestones complete`;$('quickDone').disabled=i===9;$('undo').disabled=!Object.keys(s.actual).length;
-$('timeline').innerHTML=stepNames.map((name,j)=>`<div class="step ${done(j)?'done':j===i?'current':''}"><div class="flex"><strong>${done(j)?'✓ ':''}${name}</strong><span class="mini muted">${done(j)?'Actual: ':'Target: '}${fmt(eventTime(j,c))}</span></div>${j===i?`<div class="mini muted">${safety(j)}</div><button class="primary" data-complete="${j}">Mark done ✓</button>`:''}${done(j)?`<button data-edit="${j}" style="font-size:12px;padding:4px 7px;margin-top:5px">Correct time</button>`:''}</div>`).join('');
+$('scheduleAlerts').innerHTML=scheduleAlerts(c).map(x=>`<div class="notice">${x}</div>`).join('');$('timeline').innerHTML=stepNames.map((name,j)=>`<div class="step ${done(j)?'done':j===i?'current':''}"><div class="flex"><strong>${done(j)?'✓ ':''}${name}</strong><span class="mini muted">${done(j)?'Actual: ':'Target: '}${fmt(eventTime(j,c))}</span></div>${j===i?`<div class="mini muted">${safety(j)}</div><button class="primary" data-complete="${j}">Mark done ✓</button>`:''}${done(j)?`<button data-edit="${j}" style="font-size:12px;padding:4px 7px;margin-top:5px">Correct time</button>`:''}</div>`).join('');
 const turkeyDone=done(5);$('ovenTag').textContent=turkeyDone?'Available now':'Estimated';$('ovenStatus').innerHTML=turkeyDone?`<strong>Turkey finished ${fmt(actual(5))}</strong><p>The turkey has left the oven, so other dishes can use it now. Confirm roasting is fully complete.</p>`:`<strong>Expected free: ${fmt(eventTime(5,c))}</strong><p class="muted">Estimate only. The oven becomes available once you remove the fully cooked turkey. Plan other dishes around this window, not a guaranteed finish.</p>`;
 $('restingStatus').innerHTML=turkeyDone?`Cooking completed at ${clock(actual(5))}. ${done(6)?'Rest recorded complete.':`Rest target: ${clock(actual(5)+35*MS)} (35 minutes). ${Math.max(0,Math.ceil((actual(5)+35*MS-now())/MS))} minutes remaining.`} Resting is not unlimited hot holding.`:'Once cooking is complete, tap “Turkey is done” to start the resting countdown.';
 $('holdingStatus').innerHTML=done(7)?`Carved at ${clock(actual(7))}. Dinner target: ${clock(c.dinner)}. ${c.dinner-actual(7)>60*MS?'A long wait is expected. Arrange verified hot holding at 140°F or above, or promptly refrigerate and reheat to 165°F.':'If serving soon, keep meat covered and warm; follow the two-hour total limit outside temperature control.'}`:'After carving, mark the milestone to see holding guidance.';
@@ -26,7 +57,7 @@ function butterData(){const factor=Number(s.weight)/22;return [['Unsalted butter
 function listHtml(rows){return '<ul>'+rows.map(x=>`<li><strong>${x[0]}:</strong> ${x[1]}</li>`).join('')+'</ul>'}
 function renderIngredients(){$('brineIngredients').innerHTML=listHtml(brineData())}
 function renderButter(){$('butter').innerHTML='<h3>Rosemary garlic butter</h3>'+listHtml(butterData())+'<p class="muted mini">Practical quantities scaled from a 22-pound baseline; adjust for coverage. No extra salt.</p>'}
-function renderShopping(){const rows=[['Turkey',`${s.weight} lb whole, non-enhanced`],...brineData(),...butterData().map(x=>[x[0]+' (butter)',x[1]]),['Brining bag / food-safe container','1'],['Foil and roasting pan/rack','As needed'],['ThermoMaven probes','2, charged']];$('shoppingItems').innerHTML=rows.map((x,i)=>`<div class="check"><input type="checkbox" data-shop="${i}" ${s.checked[i]?'checked':''} aria-label="Bought ${x[0]}"><label>${x[0]}: <span class="muted">${x[1]}</span></label></div>`).join('')}
+function renderShopping(){const rows=[['Turkey',`${s.weight} lb whole, non-enhanced`],...brineData(),...butterData().map(x=>[x[0]+' (butter)',x[1]]),['Brining bag / food-safe container','1'],['Aluminum foil','As needed'],['Foil roasting pan and roasting rack','As needed'],['Cooking twine (optional)','1 roll'],['Large stockpot (if needed)','1'],['ThermoMaven probes','2, charged']];$('shoppingItems').innerHTML=rows.map((x,i)=>`<div class="check"><input type="checkbox" data-shop="${i}" ${s.checked[i]?'checked':''} aria-label="Bought ${x[0]}"><label>${x[0]}: <span class="muted">${x[1]}</span></label></div>`).join('')}
 function renderPotatoes(){$('potatoIngredients').innerHTML=listHtml(Number(s.sideServings)===10?[['Yukon Gold potatoes','5 lb'],['Unsalted butter','2 sticks'],['Heavy cream','1¼ cups'],['Chives','2 tbsp'],['Salt and pepper','To taste']]:[['Yukon Gold potatoes','2 lb'],['Unsalted butter','6 tbsp'],['Heavy cream','½ cup'],['Chives','1 tbsp'],['Salt and pepper','To taste']])}
 for(let y=2026;y<=2100;y++)$('year').add(new Option(String(y),String(y)));
 for(const id of ['year','dinner','weight','brine','batch','sideServings']){$(id).value=s[id];$(id).addEventListener('change',()=>{const v=$(id).value;if(id==='weight'&&(Number(v)<12||Number(v)>30)){alert('Please enter a turkey weight between 12 and 30 lb.');$(id).value=s.weight;return}s[id]=id==='year'||id==='brine'||id==='sideServings'?Number(v):id==='weight'||id==='batch'?Number(v):v;save();render()})}
